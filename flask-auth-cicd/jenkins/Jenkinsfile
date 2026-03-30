@@ -1,0 +1,96 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_HUB_CREDENTIALS = credentials('dockerhub-credentials')
+        IMAGE_NAME = "flask-auth"
+        DOCKER_USER = "${DOCKER_HUB_CREDENTIALS_USR}"
+        KUBECONFIG_CREDENTIAL = credentials('kubeconfig')
+        APP_VERSION = "${env.BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                echo "Branch: ${env.BRANCH_NAME} | Build: ${env.BUILD_NUMBER}"
+            }
+        }
+
+        stage('Tests') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install -r app/requirements.txt
+                    python -m pytest tests/ -v --cov=app --cov-report=xml
+                '''
+            }
+            post {
+                always {
+                    junit 'test-results/*.xml'
+                    publishCoverage adapters: [coberturaAdapter('coverage.xml')]
+                }
+            }
+        }
+
+        stage('Lint') {
+            steps {
+                sh '''
+                    . venv/bin/activate
+                    flake8 app/ --max-line-length=120
+                    bandit -r app/ -ll
+                '''
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                script {
+                    def imageTag = "${DOCKER_USER}/${IMAGE_NAME}:${APP_VERSION}"
+                    sh "docker build -t ${imageTag} -t ${DOCKER_USER}/${IMAGE_NAME}:latest ."
+                    env.IMAGE_TAG = imageTag
+                }
+            }
+        }
+
+        stage('Docker Push') {
+            when { branch 'main' }
+            steps {
+                sh '''
+                    echo $DOCKER_HUB_CREDENTIALS_PSW | docker login -u $DOCKER_USER --password-stdin
+                    docker push ${DOCKER_USER}/${IMAGE_NAME}:${APP_VERSION}
+                    docker push ${DOCKER_USER}/${IMAGE_NAME}:latest
+                '''
+            }
+        }
+
+        stage('Deploy Kubernetes') {
+            when { branch 'main' }
+            steps {
+                sh '''
+                    export KUBECONFIG=${KUBECONFIG_CREDENTIAL}
+                    sed -i "s|YOUR_DOCKERHUB_USER/flask-auth:latest|${DOCKER_USER}/${IMAGE_NAME}:${APP_VERSION}|g" k8s/deployment.yaml
+                    kubectl apply -f k8s/deployment.yaml
+                    kubectl rollout status deployment/flask-auth-app -n flask-auth --timeout=300s
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline concluído com sucesso!'
+            slackSend channel: '#devops', message: "✅ Deploy ${IMAGE_NAME}:${APP_VERSION} realizado com sucesso!"
+        }
+        failure {
+            echo '❌ Pipeline falhou. Iniciando rollback...'
+            sh 'kubectl rollout undo deployment/flask-auth-app -n flask-auth || true'
+            slackSend channel: '#devops', message: "❌ FALHA no deploy ${IMAGE_NAME}:${APP_VERSION}. Rollback iniciado."
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

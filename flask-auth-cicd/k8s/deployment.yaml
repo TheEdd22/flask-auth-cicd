@@ -1,0 +1,204 @@
+# ── Namespace ─────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flask-auth
+  labels:
+    app: flask-auth
+
+---
+# ── ConfigMap ─────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flask-auth-config
+  namespace: flask-auth
+data:
+  FLASK_DEBUG: "false"
+  APP_VERSION: "1.0.0"
+
+---
+# ── Secret (base64 encoded values) ───────────────────────────────────────────
+# Generate: echo -n "your-value" | base64
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flask-auth-secret
+  namespace: flask-auth
+type: Opaque
+data:
+  JWT_SECRET_KEY: c3VwZXItc2VjcmV0LWtleS1jaGFuZ2UtaW4tcHJvZA==  # super-secret-key-change-in-prod
+  DATABASE_URL: cG9zdGdyZXNxbDovL3Bvc3RncmVzOnBvc3RncmVzQGZsYXNrLWF1dGgtZGI6NTQzMi9hdXRoZGI=
+
+---
+# ── PostgreSQL Deployment ─────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-auth-db
+  namespace: flask-auth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flask-auth-db
+  template:
+    metadata:
+      labels:
+        app: flask-auth-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              value: postgres
+            - name: POSTGRES_DB
+              value: authdb
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+
+---
+# ── PostgreSQL PVC ─────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: flask-auth
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# ── PostgreSQL Service ─────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-auth-db
+  namespace: flask-auth
+spec:
+  selector:
+    app: flask-auth-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+---
+# ── Flask App Deployment ──────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-auth-app
+  namespace: flask-auth
+  labels:
+    app: flask-auth-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: flask-auth-app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: flask-auth-app
+    spec:
+      containers:
+        - name: flask-auth
+          image: YOUR_DOCKERHUB_USER/flask-auth:latest  # replaced by CI/CD
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: flask-auth-config
+          env:
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flask-auth-secret
+                  key: JWT_SECRET_KEY
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: flask-auth-secret
+                  key: DATABASE_URL
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+
+---
+# ── Flask App Service ─────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-auth-service
+  namespace: flask-auth
+spec:
+  selector:
+    app: flask-auth-app
+  ports:
+    - port: 80
+      targetPort: 5000
+  type: LoadBalancer
+
+---
+# ── Horizontal Pod Autoscaler ─────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: flask-auth-hpa
+  namespace: flask-auth
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: flask-auth-app
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

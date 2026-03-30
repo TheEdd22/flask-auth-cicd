@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+*.db
+htmlcov/
+.coverage
+coverage.xml
+*.egg-info/
+dist/
+build/
+.DS_Store
+*.log
