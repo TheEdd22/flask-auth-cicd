@@ -1,6 +1,8 @@
 # Flask Auth API — CI/CD com Docker & Kubernetes
 
 "Este é um projeto de Portfólio e não deve ser usado em produção sem ajustes adicionais de segurança!!!"
+> ⚠️ Os exemplos abaixo usam dados fictícios e são apenas para fins educacionais.
+
 
 ![CI/CD Pipeline](https://github.com/SEU_USUARIO/flask-auth-cicd/actions/workflows/ci-cd.yml/badge.svg)
 ![Docker](https://img.shields.io/badge/Docker-2CA5E0?style=flat&logo=docker&logoColor=white)
